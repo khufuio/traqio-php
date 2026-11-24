@@ -1,0 +1,56 @@
+{
+    "name": "traqio/traqio-php",
+    "description": "Traqio server SDK for PHP and Laravel — report sign-ups and conversions from your backend and tie them to the ad click (trackID) the visitor came from.",
+    "type": "library",
+    "license": "MIT",
+    "keywords": ["attribution", "web-attribution", "server-side-tracking", "conversion-tracking", "roas", "laravel"],
+    "homepage": "https://traqio.app/docs/sdks/php",
+    "authors": [
+        {
+            "name": "khufu.io",
+            "email": "hello@khufu.io"
+        }
+    ],
+    "support": {
+        "docs": "https://traqio.app/docs/sdks/php",
+        "email": "hello@khufu.io"
+    },
+    "require": {
+        "php": ">=8.1",
+        "ext-curl": "*",
+        "ext-json": "*"
+    },
+    "require-dev": {
+        "orchestra/testbench": "^10.0 || ^11.0",
+        "phpunit/phpunit": "^10.5 || ^11.0",
+        "symfony/http-foundation": "^6.4 || ^7.0"
+    },
+    "suggest": {
+        "laravel/framework": "Auto-discovered service provider, config file and the Traqio facade (Laravel 12 and 13)"
+    },
+    "autoload": {
+        "psr-4": {
+            "Traqio\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Traqio\\Tests\\": "tests/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Traqio\\Laravel\\TraqioServiceProvider"
+            ],
+            "aliases": {
+                "Traqio": "Traqio\\Laravel\\Facades\\Traqio"
+            }
+        }
+    },
+    "config": {
+        "sort-packages": true
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}

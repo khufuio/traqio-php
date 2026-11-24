@@ -1,0 +1,4 @@
+# Kept out of the archive Composer downloads (the package's runtime files only).
+/tests export-ignore
+/phpunit.xml.dist export-ignore
+/.gitattributes export-ignore
