@@ -118,6 +118,59 @@ Conversions follow the user: they are credited to the campaign that acquired the
 To keep the call out of the request, run it after the response:
 `dispatch(fn () => Traqio::track(...))->afterResponse();`
 
+## Product analytics
+
+`capture()` records a product-analytics event from your backend — what the console's
+Analytics section reads (events, funnels, property splits), next to the events your
+site and apps send. It is **not** a conversion: it goes to `/ingest/analytics/server`,
+is never billed and never reaches an ad network. A purchase or a sign-up stays
+`track()` / `signup()`.
+
+```php
+$traqio->capture('export_finished', userId: (string) $user->id, props: ['rows' => 1200]);
+
+// A subject that is not a signed-in user: an account, a visitor id @traqio/web gave you.
+$traqio->capture('subscription_churned', distinctId: $account->slug);
+
+// A user's properties — a breakdown and a cohort condition in the console.
+$traqio->identify((string) $user->id, ['plan' => 'pro', 'seats' => 12], ['signup_source' => 'sales']);
+
+// Laravel
+Traqio::capture('export_finished', userId: (string) $user->id);
+```
+
+One request per call, retried like the others (in Laravel, a queued job keeps it off
+the request). Names are 1-128 characters and never start with `$` (reserved); `props`
+must be an associative array that encodes to JSON under 4 KB, else they are dropped
+and the event kept; trait values are text, numbers or booleans — never an email or a
+name. There is no `screen()` on a server: the route takes custom events only. In
+debug mode the events go to Analytics › Realtime › Debug and count nowhere.
+
+## Groups (B2B accounts)
+
+In B2B, your customer is an account — a company, a workspace — as much as a person.
+`group()` creates or updates that account with its properties; `capture()` then names,
+through `groups:`, the account each event happened in. The console's Analytics can then
+count accounts instead of people: funnels and retention by account, unique accounts,
+and the list of your accounts with their properties.
+
+```php
+// After sign-in, or when the account changes (a plan change in a billing webhook):
+// create or update the account. Traits may be empty — the account is created anyway.
+$traqio->group('company', (string) $team->id, ['plan' => 'pro', 'seats' => 12]);
+
+// Every event that happens in that account names it.
+$traqio->capture('export_finished', userId: (string) $user->id, groups: ['company' => (string) $team->id]);
+```
+
+The group type is lowercase (`company`, `workspace`, `team`: a letter, then letters,
+digits or `_`, 30 characters at most); the key is your own account id, 1-256
+characters — never an email. A bad type or key throws a `TraqioException` before any request; in
+`capture()`, invalid pairs are dropped and at most 5 types are kept. Traits follow the
+identify rules — never an email or a person's name. A server keeps nothing between
+calls, so pass the groups on each event that belongs to an account; `resetGroups()` on
+sign-out (or `reset()`) belongs to the web and app SDKs, which remember the account.
+
 ## What it does today
 
 - Ties a sign-up to its click and answers with the credited campaign — **yes**.

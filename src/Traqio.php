@@ -19,7 +19,7 @@ use Traqio\Http\TransportException;
  */
 final class Traqio
 {
-    public const VERSION = '0.1.0';
+    public const VERSION = '0.2.0';
 
     private const DEFAULT_ENDPOINT = 'https://api.traqio.app';
     private const SECRET_PREFIX = 'tq_sk_';
@@ -27,6 +27,7 @@ final class Traqio
 
     private readonly string $secretKey;
     private readonly string $url;
+    private readonly string $analyticsUrl;
     private readonly float $timeout;
     private readonly int $maxRetries;
     private readonly Transport $transport;
@@ -52,7 +53,9 @@ final class Traqio
                 : 'The secret key must be a server key (tq_sk_…) from Integrations → SDK.');
         }
         $this->secretKey = $key;
-        $this->url = rtrim((string) ($options['endpoint'] ?? self::DEFAULT_ENDPOINT), '/') . '/ingest/server';
+        $origin = rtrim((string) ($options['endpoint'] ?? self::DEFAULT_ENDPOINT), '/');
+        $this->url = $origin . '/ingest/server';
+        $this->analyticsUrl = $origin . '/ingest/analytics/server';
         $this->timeout = (float) ($options['timeout'] ?? 10);
         $this->maxRetries = max(0, (int) ($options['max_retries'] ?? 2));
         $this->transport = $options['transport'] ?? new CurlTransport();
@@ -154,7 +157,171 @@ final class Traqio
         return $this->post(json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
     }
 
+    /**
+     * A product-analytics event from your backend — `export_finished`,
+     * `subscription_churned` — read in the console's Analytics section. NOT a
+     * conversion: never billed, never sent to an ad network (that is track()).
+     *
+     *   $traqio->capture('export_finished', userId: (string) $user->id, props: ['rows' => 1200]);
+     *
+     * `distinctId` is who did it as your backend knows them (an account slug, the
+     * visitor id @traqio/web gave you); it defaults to `userId`. `props` must encode to
+     * JSON and stay under 4 KB, else they are dropped and the event kept. No screen()
+     * on a server, on purpose: the route takes custom events only. `groups` names the
+     * accounts it happened in (`['company' => 'acme']`): invalid pairs are dropped, at
+     * most 5 types.
+     *
+     * @param array<string, mixed> $props
+     * @param array<string, string> $groups
+     */
+    public function capture(
+        string $name,
+        ?string $distinctId = null,
+        ?string $userId = null,
+        array $props = [],
+        \DateTimeInterface|int|float|null $timestamp = null,
+        array $groups = [],
+    ): AnalyticsResult {
+        $uid = trim((string) $userId);
+        $subject = trim((string) $distinctId);
+        if ($subject === '') {
+            $subject = $uid;
+        }
+        if ($subject === '') {
+            throw new TraqioException('distinctId (or userId) is required');
+        }
+        if (Analytics::length($subject) > Analytics::MAX_DISTINCT_ID) {
+            throw new TraqioException('distinctId is longer than ' . Analytics::MAX_DISTINCT_ID . ' characters');
+        }
+        if (Analytics::length($uid) > Analytics::MAX_USER_ID) {
+            throw new TraqioException('userId is longer than ' . Analytics::MAX_USER_ID . ' characters');
+        }
+        $eventName = Analytics::cleanEventName($name);
+        if ($eventName === null) {
+            throw new TraqioException('The event name must be 1-128 characters and must not start with $');
+        }
+        $event = ['kind' => 'custom', 'name' => $eventName, 'ts' => self::epochMs($timestamp)];
+        $clean = Analytics::cleanProps($props);
+        if ($clean !== null) {
+            $event['props'] = $clean;
+        }
+        $cleanGroups = Analytics::cleanGroups($groups);
+        if ($cleanGroups !== null) {
+            $event['groups'] = $cleanGroups;
+        }
+
+        return $this->postAnalytics($subject, $uid !== '' ? $uid : null, [$event]);
+    }
+
+    /**
+     * A user's PROPERTIES — `plan`, `role`, `seats` — read in the console as a
+     * breakdown and a cohort condition. `traits` overwrite, `traitsOnce` are written
+     * only where the user has no value yet. Values are text, numbers or booleans —
+     * never an email or a name. At most 50 keys.
+     *
+     * @param array<string, mixed> $traits
+     * @param array<string, mixed> $traitsOnce
+     */
+    public function identify(string $userId, array $traits = [], array $traitsOnce = []): AnalyticsResult
+    {
+        $uid = trim($userId);
+        if ($uid === '') {
+            throw new TraqioException('userId is required');
+        }
+        if (Analytics::length($uid) > Analytics::MAX_USER_ID) {
+            throw new TraqioException('userId is longer than ' . Analytics::MAX_USER_ID . ' characters');
+        }
+        $set = Analytics::cleanTraits($traits);
+        $setOnce = Analytics::cleanTraits($traitsOnce);
+        if ($set === [] && $setOnce === []) {
+            throw new TraqioException('identify needs at least one valid trait');
+        }
+        $entry = ['kind' => 'identify', 'ts' => self::epochMs(null), 'userId' => $uid];
+        if ($set !== []) {
+            $entry['set'] = $set;
+        }
+        if ($setOnce !== []) {
+            $entry['setOnce'] = $setOnce;
+        }
+
+        return $this->postAnalytics(Analytics::cut($uid, Analytics::MAX_DISTINCT_ID), $uid, [$entry]);
+    }
+
+    /**
+     * An ACCOUNT's properties — B2B analytics: creates or updates the `company` /
+     * `workspace` your users belong to, so the console can count accounts.
+     * `groupType` is lowercase (`^[a-z][a-z0-9_]{0,29}$`), `groupKey` your own account
+     * id (1–256 characters, never an email). Traits follow the identify rules and may
+     * be empty. Events then name their accounts through capture(groups: [...]).
+     *
+     *   $traqio->group('company', (string) $team->id, ['plan' => 'pro', 'seats' => 12]);
+     *
+     * @param array<string, mixed> $traits
+     * @param array<string, mixed> $traitsOnce
+     */
+    public function group(string $groupType, string $groupKey, array $traits = [], array $traitsOnce = [], ?string $distinctId = null): AnalyticsResult
+    {
+        $type = Analytics::cleanGroupType($groupType);
+        if ($type === null) {
+            throw new TraqioException('groupType must match ^[a-z][a-z0-9_]{0,29}$ (e.g. company)');
+        }
+        $key = Analytics::cleanGroupKey($groupKey);
+        if ($key === null) {
+            throw new TraqioException('groupKey must be 1-' . Analytics::MAX_GROUP_KEY . ' characters');
+        }
+        $subject = trim((string) $distinctId);
+        if (Analytics::length($subject) > Analytics::MAX_DISTINCT_ID) {
+            throw new TraqioException('distinctId is longer than ' . Analytics::MAX_DISTINCT_ID . ' characters');
+        }
+        $entry = ['kind' => 'group', 'ts' => self::epochMs(null), 'groupType' => $type, 'groupKey' => $key];
+        $set = Analytics::cleanTraits($traits);
+        $setOnce = Analytics::cleanTraits($traitsOnce);
+        if ($set !== []) {
+            $entry['set'] = $set;
+        }
+        if ($setOnce !== []) {
+            $entry['setOnce'] = $setOnce;
+        }
+
+        return $this->postAnalytics($subject !== '' ? $subject : Analytics::cut("group:{$type}:{$key}", Analytics::MAX_DISTINCT_ID), null, [$entry]);
+    }
+
+    /** @param list<array<string, mixed>> $events */
+    private function postAnalytics(string $anonymousId, ?string $userId, array $events): AnalyticsResult
+    {
+        // The server stamps a backend's rows with its own session (`server`): none sent.
+        $payload = ['anonymousId' => $anonymousId];
+        if ($userId !== null) {
+            $payload['userId'] = $userId;
+        }
+        $payload['events'] = $events;
+        if ($this->debug) {
+            $payload['debug'] = true;
+        }
+
+        return AnalyticsResult::fromArray($this->request($this->analyticsUrl, json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)));
+    }
+
+    private static function epochMs(\DateTimeInterface|int|float|null $timestamp): int
+    {
+        if ($timestamp instanceof \DateTimeInterface) {
+            return (int) $timestamp->format('Uv');
+        }
+        if ((is_int($timestamp) || is_float($timestamp)) && is_finite((float) $timestamp)) {
+            // Epoch seconds, as PHP's time() and microtime(true) give them.
+            return (int) round($timestamp * 1000);
+        }
+
+        return (int) round(microtime(true) * 1000);
+    }
+
     private function post(string $body): Result
+    {
+        return Result::fromArray($this->request($this->url, $body));
+    }
+
+    /** @return array<string, mixed> */
+    private function request(string $url, string $body): array
     {
         $headers = [
             'Authorization' => 'Bearer ' . $this->secretKey,
@@ -168,14 +335,14 @@ final class Traqio
                 usleep(min(250_000 * 2 ** ($attempt - 1), 4_000_000));
             }
             try {
-                $response = $this->transport->post($this->url, $headers, $body, $this->timeout);
+                $response = $this->transport->post($url, $headers, $body, $this->timeout);
             } catch (TransportException $e) {
                 $last = new TraqioException('Traqio API unreachable: ' . $e->getMessage(), null, null, $e);
                 continue;
             }
             $json = json_decode($response->body, true);
             if ($response->status >= 200 && $response->status < 300 && is_array($json)) {
-                return Result::fromArray($json);
+                return $json;
             }
             $message = is_array($json) ? ($json['message'] ?? null) : null;
             $last = new TraqioException(
