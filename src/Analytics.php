@@ -21,6 +21,8 @@ final class Analytics
     public const MAX_GROUPS = 5;
     // `D`: `$` must not match before a trailing newline.
     private const GROUP_TYPE = '/^[a-z][a-z0-9_]{0,29}$/D';
+    public const EXPOSURE_EVENT = '$exposure';
+    public const MAX_EXPOSURE_TEXT = 200;
 
     /** A custom event name the server takes, or null: non-empty, ≤ 128, never `$…` (reserved). */
     public static function cleanEventName(mixed $name): ?string
@@ -125,6 +127,28 @@ final class Analytics
         }
 
         return $out !== [] ? $out : null;
+    }
+
+    /**
+     * `$exposure`'s properties: `[...props, experiment, variant]` — the two named ones
+     * win over a prop of the same name — or null when the experiment or the variant is
+     * not text of 1–200 characters once trimmed.
+     *
+     * @return array<string, mixed>|null
+     */
+    public static function exposureProps(mixed $experiment, mixed $variant, mixed $props = []): ?array
+    {
+        $e = is_string($experiment) ? trim($experiment) : '';
+        $v = is_string($variant) ? trim($variant) : '';
+        if ($e === '' || $v === '' || self::length($e) > self::MAX_EXPOSURE_TEXT || self::length($v) > self::MAX_EXPOSURE_TEXT) {
+            return null;
+        }
+        $base = is_array($props) && !array_is_list($props) ? $props : [];
+        $merged = array_merge($base, ['experiment' => $e, 'variant' => $v]);
+
+        // Props that cannot travel (over 4 KB, not JSON) would take experiment/variant
+        // down with them in capture(): keep the exposure, drop the extras.
+        return self::cleanProps($merged) !== null ? $merged : ['experiment' => $e, 'variant' => $v];
     }
 
     /** Characters (not bytes) in a UTF-8 string — without requiring ext-mbstring. */

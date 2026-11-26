@@ -19,7 +19,7 @@ use Traqio\Http\TransportException;
  */
 final class Traqio
 {
-    public const VERSION = '0.2.0';
+    public const VERSION = '0.3.0';
 
     private const DEFAULT_ENDPOINT = 'https://api.traqio.app';
     private const SECRET_PREFIX = 'tq_sk_';
@@ -284,6 +284,64 @@ final class Traqio
         }
 
         return $this->postAnalytics($subject !== '' ? $subject : Analytics::cut("group:{$type}:{$key}", Analytics::MAX_DISTINCT_ID), null, [$entry]);
+    }
+
+    /**
+     * The user known so far as `previousId` (a guest id, a pre-sign-up id, an id from
+     * an older system) is the same person as `userId`. With the secret key the server
+     * merges ALL of `previousId`'s analytics history and properties into `userId`
+     * (`userId`'s own properties win). Both ids: 1–256 characters, and different.
+     *
+     *   $traqio->alias((string) $user->id, $guestId);
+     */
+    public function alias(string $userId, string $previousId): AnalyticsResult
+    {
+        $uid = trim($userId);
+        $prev = trim($previousId);
+        if ($uid === '') {
+            throw new TraqioException('userId is required');
+        }
+        if ($prev === '') {
+            throw new TraqioException('previousId is required');
+        }
+        if (Analytics::length($uid) > Analytics::MAX_USER_ID || Analytics::length($prev) > Analytics::MAX_USER_ID) {
+            throw new TraqioException('userId and previousId must be at most ' . Analytics::MAX_USER_ID . ' characters');
+        }
+        if ($uid === $prev) {
+            // The server refuses it (alias_same_id): nothing to merge.
+            throw new TraqioException('previousId must differ from userId');
+        }
+        $entry = ['kind' => 'alias', 'ts' => self::epochMs(null), 'userId' => $uid, 'previousId' => $prev];
+
+        return $this->postAnalytics(Analytics::cut($uid, Analytics::MAX_DISTINCT_ID), $uid, [$entry]);
+    }
+
+    /**
+     * An experiment exposure: this subject saw `variant` of `experiment` — the
+     * `$exposure` event the console's experiment analysis reads. `experiment` and
+     * `variant`: 1–200 characters; they win over a prop of the same name. The subject
+     * arguments are capture()'s.
+     *
+     *   $traqio->exposure('checkout_v2', 'treatment', userId: (string) $user->id);
+     *
+     * @param array<string, mixed> $props
+     * @param array<string, string> $groups
+     */
+    public function exposure(
+        string $experiment,
+        string $variant,
+        array $props = [],
+        ?string $distinctId = null,
+        ?string $userId = null,
+        \DateTimeInterface|int|float|null $timestamp = null,
+        array $groups = [],
+    ): AnalyticsResult {
+        $merged = Analytics::exposureProps($experiment, $variant, $props);
+        if ($merged === null) {
+            throw new TraqioException('experiment and variant must be 1-' . Analytics::MAX_EXPOSURE_TEXT . ' characters');
+        }
+
+        return $this->capture(Analytics::EXPOSURE_EVENT, $distinctId, $userId, $merged, $timestamp, $groups);
     }
 
     /** @param list<array<string, mixed>> $events */

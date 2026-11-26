@@ -171,6 +171,27 @@ identify rules — never an email or a person's name. A server keeps nothing bet
 calls, so pass the groups on each event that belongs to an account; `resetGroups()` on
 sign-out (or `reset()`) belongs to the web and app SDKs, which remember the account.
 
+## Alias and experiments
+
+`alias()` says that the user known so far as `previousId` — a guest id, a pre-sign-up
+id, an id from an older system — is `userId`. With your secret key the server merges
+ALL of `previousId`'s analytics history and properties into `userId` (`userId`'s own
+properties win). `exposure()` records that a user saw a variant of an experiment: a
+`$exposure` event the console's experiment analysis reads.
+
+```php
+// At sign-up, when the guest becomes a user.
+$traqio->alias((string) $user->id, $guestId);
+
+// Where the variant is decided — same subject arguments as capture().
+$traqio->exposure('checkout_v2', 'treatment', ['surface' => 'web'], userId: (string) $user->id);
+```
+
+Both ids are 1-256 characters and must differ; the experiment and variant are 1-200
+characters and win over a prop of the same name. Anything else throws a
+`TraqioException` before any request. There is no `reset()` on a server — it keeps no
+user between calls; call `reset()` at sign-out in the web and app SDKs.
+
 ## What it does today
 
 - Ties a sign-up to its click and answers with the credited campaign — **yes**.
